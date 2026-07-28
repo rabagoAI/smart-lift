@@ -15,6 +15,18 @@ export interface Violation {
   message: string
 }
 
+/**
+ * Resultado de evaluar un frame. `visible: false` significa que ningún lado
+ * del cuerpo se ve con suficiente fiabilidad (encuadre malo, persona fuera de
+ * plano o no de perfil): en ese caso NO se ha evaluado ninguna regla y
+ * `violations` viene vacío, en lugar de dar avisos calculados sobre landmarks
+ * poco fiables.
+ */
+export interface FrameResult {
+  visible: boolean
+  violations: Violation[]
+}
+
 interface BaseCheck {
   id: string
   message: string
@@ -55,19 +67,11 @@ export interface KneeOverToeCheck extends BaseCheck {
   maxRatio: number
 }
 
-/** Diferencia entre el mismo ángulo de 3 puntos calculado en el lado izquierdo y el derecho. */
-export interface SymmetryCheck extends BaseCheck {
-  kind: 'symmetry'
-  points: [JointRole, JointRole, JointRole] // [a, vertex, c]
-  maxDifference: number
-}
-
 export type ExerciseCheck =
   | InstantAngleCheck
   | InstantVerticalAngleCheck
   | DepthMinCheck
   | KneeOverToeCheck
-  | SymmetryCheck
 
 export interface ExerciseConfig {
   id: string

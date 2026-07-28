@@ -4,6 +4,7 @@ import { LANDMARK, type LandmarkName, type PoseLandmarks } from '../pose/types'
 import type {
   DepthMinCheck,
   ExerciseConfig,
+  FrameResult,
   JointRole,
   Side,
   Violation,
@@ -35,14 +36,55 @@ function point(landmarks: PoseLandmarks, side: Side, role: JointRole): Point2D {
   return toPoint(landmarks[LANDMARK[name]])
 }
 
-/** Elige el lado (izq/dcha) mejor visto por la cámara según la visibility de MediaPipe. */
-function pickSide(landmarks: PoseLandmarks): Side {
+/**
+ * Articulaciones que los checks de este ejercicio usan realmente. La
+ * visibilidad se mide solo sobre estas: en press de banca, por ejemplo, la
+ * rodilla y el tobillo no intervienen en ninguna regla, así que no deben
+ * decidir qué lado se elige ni si la pose es fiable.
+ */
+function requiredRoles(config: ExerciseConfig): JointRole[] {
+  const roles = new Set<JointRole>()
+  for (const check of config.checks) {
+    switch (check.kind) {
+      case 'instantAngle':
+      case 'instantVerticalAngle':
+      case 'depthMin':
+        for (const role of check.points) roles.add(role)
+        break
+      case 'kneeOverToe':
+        // Único check que no declara points: usa siempre estos tres.
+        roles.add('knee')
+        roles.add('ankle')
+        roles.add('footIndex')
+        break
+    }
+  }
+  return [...roles]
+}
+
+/**
+ * Elige el lado (izq/dcha) mejor visto por la cámara según la visibility de
+ * MediaPipe, y devuelve además su visibilidad media (0-1) sobre los roles
+ * indicados, para poder descartar el frame si ni el mejor lado es fiable.
+ */
+function pickSide(
+  landmarks: PoseLandmarks,
+  roles: JointRole[],
+): { side: Side; visibility: number } {
+  // Sin roles (ejercicio sin checks) no hay nada que medir: no bloquear.
+  if (roles.length === 0) return { side: 'right', visibility: 1 }
+
   const score = (side: Side) =>
-    (['shoulder', 'hip', 'knee', 'ankle'] as JointRole[]).reduce(
+    roles.reduce(
       (sum, role) => sum + (landmarks[LANDMARK[ROLE_TO_LANDMARK[side][role]]].visibility ?? 0),
       0,
-    )
-  return score('right') >= score('left') ? 'right' : 'left'
+    ) / roles.length
+
+  const right = score('right')
+  const left = score('left')
+  return right >= left
+    ? { side: 'right', visibility: right }
+    : { side: 'left', visibility: left }
 }
 
 function jointAngle(landmarks: PoseLandmarks, side: Side, points: [JointRole, JointRole, JointRole]): number {
@@ -53,6 +95,22 @@ function jointAngle(landmarks: PoseLandmarks, side: Side, points: [JointRole, Jo
     point(landmarks, side, c),
   )
 }
+
+/**
+ * Visibilidad media mínima (0-1) del mejor lado para fiarse de la pose. Por
+ * debajo de esto no se evalúa ninguna regla: MediaPipe siempre devuelve 33
+ * landmarks, también cuando la persona está mal encuadrada, de frente o medio
+ * fuera de plano, y evaluar ángulos sobre esas posiciones inventadas produce
+ * avisos falsos. Umbral empírico, ajustable tras pruebas reales como los de
+ * `squat.ts`: en una toma de perfil correcta el lado cercano suele dar >0.9.
+ */
+const MIN_VISIBILITY = 0.5
+/**
+ * Histéresis: una vez perdida la pose, hay que superar MIN_VISIBILITY + esto
+ * para recuperarla. Evita que el aviso de encuadre parpadee frame a frame
+ * cuando la visibilidad oscila justo alrededor del umbral.
+ */
+const VISIBILITY_HYSTERESIS = 0.15
 
 // Umbral para ignorar el ruido de los landmarks al detectar cambios de dirección.
 const DIRECTION_EPSILON_DEG = 3
@@ -74,6 +132,10 @@ interface DepthState {
  */
 export function createExerciseEvaluator(config: ExerciseConfig) {
   const depthState = new Map<string, DepthState>()
+  const roles = requiredRoles(config)
+  // Arranca en false: no se da por buena la pose hasta que se vea bien de
+  // verdad (con la histéresis, el primer frame válido debe superar el umbral alto).
+  let poseVisible = false
 
   function evaluateDepthMin(check: DepthMinCheck, landmarks: PoseLandmarks, side: Side): Violation | null {
     const angle = jointAngle(landmarks, side, check.points)
@@ -115,8 +177,20 @@ export function createExerciseEvaluator(config: ExerciseConfig) {
     return violation
   }
 
-  function evaluateFrame(landmarks: PoseLandmarks): Violation[] {
-    const side = pickSide(landmarks)
+  function evaluateFrame(landmarks: PoseLandmarks): FrameResult {
+    const { side, visibility } = pickSide(landmarks, roles)
+    const threshold = poseVisible
+      ? MIN_VISIBILITY
+      : MIN_VISIBILITY + VISIBILITY_HYSTERESIS
+    poseVisible = visibility >= threshold
+
+    if (!poseVisible) {
+      // Se descarta el estado de repetición en curso: al recuperar el encuadre,
+      // un prevAngle/direction de antes de perderlo daría un falso mínimo local.
+      depthState.clear()
+      return { visible: false, violations: [] }
+    }
+
     const violations: Violation[] = []
 
     for (const check of config.checks) {
@@ -151,14 +225,6 @@ export function createExerciseEvaluator(config: ExerciseConfig) {
           }
           break
         }
-        case 'symmetry': {
-          const leftAngle = jointAngle(landmarks, 'left', check.points)
-          const rightAngle = jointAngle(landmarks, 'right', check.points)
-          if (Math.abs(leftAngle - rightAngle) > check.maxDifference) {
-            violations.push({ id: check.id, message: check.message })
-          }
-          break
-        }
         case 'depthMin': {
           const violation = evaluateDepthMin(check, landmarks, side)
           if (violation) violations.push(violation)
@@ -167,7 +233,7 @@ export function createExerciseEvaluator(config: ExerciseConfig) {
       }
     }
 
-    return violations
+    return { visible: true, violations }
   }
 
   return { evaluateFrame }

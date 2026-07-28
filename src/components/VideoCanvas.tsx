@@ -4,6 +4,7 @@ import { createLandmarkSmoother } from '../lib/pose/smoothing'
 import { POSE_CONNECTIONS, type PoseLandmarks } from '../lib/pose/types'
 import { EXERCISES, createExerciseEvaluator, type ExerciseId } from '../lib/rules'
 import { createFeedbackTracker, type FeedbackState } from '../lib/rules/feedbackTracker'
+import type { FrameResult } from '../lib/rules/types'
 import { FeedbackPanel } from './FeedbackPanel'
 
 const EMPTY_FEEDBACK: FeedbackState = { active: null, history: [] }
@@ -25,8 +26,12 @@ export function VideoCanvas({ exerciseId }: VideoCanvasProps) {
   )
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<FeedbackState>(EMPTY_FEEDBACK)
+  // Arranca en false: hasta que se detecte una pose fiable no se afirma que la
+  // forma sea buena (sin nadie delante de la cámara no hay nada que evaluar).
+  const [poseVisible, setPoseVisible] = useState(false)
   const lastActiveIdRef = useRef<string | null>(null)
   const lastHistoryLengthRef = useRef(0)
+  const lastPoseVisibleRef = useRef(false)
 
   // Se recrean al cambiar de ejercicio para no arrastrar estado (ej. mínimo
   // local de una rep) de un movimiento distinto.
@@ -39,7 +44,9 @@ export function VideoCanvas({ exerciseId }: VideoCanvasProps) {
     trackerRef.current = createFeedbackTracker(EXERCISES[exerciseId])
     lastActiveIdRef.current = null
     lastHistoryLengthRef.current = 0
+    lastPoseVisibleRef.current = false
     setFeedback(EMPTY_FEEDBACK)
+    setPoseVisible(false)
   }, [exerciseId])
 
   useEffect(() => {
@@ -86,17 +93,28 @@ export function VideoCanvas({ exerciseId }: VideoCanvasProps) {
             : null
           drawFrame(ctx, video, landmarks)
 
-          if (landmarks) {
-            const violations = evaluatorRef.current.evaluateFrame(landmarks)
-            const state = trackerRef.current.update(violations, Date.now())
-            if (
-              state.active?.id !== lastActiveIdRef.current ||
-              state.history.length !== lastHistoryLengthRef.current
-            ) {
-              lastActiveIdRef.current = state.active?.id ?? null
-              lastHistoryLengthRef.current = state.history.length
-              setFeedback(state)
-            }
+          // Sin landmarks (nadie en cuadro) se trata igual que una pose no
+          // fiable: mismo aviso de encuadre y ninguna regla evaluada.
+          const { visible, violations }: FrameResult = landmarks
+            ? evaluatorRef.current.evaluateFrame(landmarks)
+            : { visible: false, violations: [] }
+
+          if (visible !== lastPoseVisibleRef.current) {
+            lastPoseVisibleRef.current = visible
+            setPoseVisible(visible)
+          }
+
+          // Se llama al tracker también cuando no hay pose fiable (con la lista
+          // vacía): así el último aviso caduca por HOLD_MS en vez de quedarse
+          // congelado en pantalla, y no se pierde el historial.
+          const state = trackerRef.current.update(violations, Date.now())
+          if (
+            state.active?.id !== lastActiveIdRef.current ||
+            state.history.length !== lastHistoryLengthRef.current
+          ) {
+            lastActiveIdRef.current = state.active?.id ?? null
+            lastHistoryLengthRef.current = state.history.length
+            setFeedback(state)
           }
 
           rafId = requestAnimationFrame(loop)
@@ -149,7 +167,9 @@ export function VideoCanvas({ exerciseId }: VideoCanvasProps) {
           {errorMessage}
         </div>
       )}
-      {status === 'ready' && <FeedbackPanel feedback={feedback} />}
+      {status === 'ready' && (
+        <FeedbackPanel feedback={feedback} poseVisible={poseVisible} />
+      )}
     </div>
   )
 }

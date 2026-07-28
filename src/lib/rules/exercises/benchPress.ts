@@ -13,13 +13,16 @@ import type { ExerciseConfig } from '../types'
  *   entra en rotación externa máxima bajo carga, lo que compresiona
  *   estructuras del hombro (bíceps, bursa, manguito rotador) y aumenta el
  *   riesgo de lesión. Se comprueba en todo momento, no solo en el fondo.
- * - Simetría entre brazos: diferencia de ángulo de codo izq/dcha ≤15° en
- *   cualquier punto del recorrido. Heurística de asimetría funcional (no
- *   hay un estudio específico de bench press que fije este número, pero es
- *   coherente con umbrales usados en tests funcionales de fisioterapia).
+ *
+ * No hay check de simetría entre brazos: en vista de perfil solo un lado del
+ * cuerpo es fiable (ver `pickSide` en engine.ts); el brazo del fondo queda
+ * parcial u ocultamente tapado por el torso, sobre todo con los codos
+ * abiertos, así que su landmark no es fiable para comparar contra el lado
+ * visible. Se descartó tras revisar el mismo tipo de problema que obligó a
+ * ajustar los umbrales de la sentadilla tras pruebas reales.
  *
  * Prioridad (cuál se muestra si hay varios avisos a la vez): apertura de codo
- * > simetría > profundidad, de mayor a menor riesgo de lesión.
+ * > profundidad, de mayor a menor riesgo de lesión.
  */
 export const benchPressConfig: ExerciseConfig = {
   id: 'benchPress',
@@ -41,14 +44,6 @@ export const benchPressConfig: ExerciseConfig = {
       max: 75,
       message: 'Codos demasiado abiertos, riesgo para el hombro',
       priority: 3,
-    },
-    {
-      kind: 'symmetry',
-      id: 'bench-symmetry',
-      points: ['shoulder', 'elbow', 'wrist'],
-      maxDifference: 15,
-      message: 'Un brazo baja más que el otro, corrige la simetría',
-      priority: 2,
     },
   ],
 }
